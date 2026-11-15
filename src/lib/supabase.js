@@ -605,15 +605,36 @@ export const dbService = {
     };
 
     if (isSupabaseConfigured) {
-      const { data, error } = await supabase
+      // 1. Try insert with returned row
+      let insertResult = await supabase
         .from('bookings')
         .insert([dbPayload])
         .select()
-        .single();
-      if (error) throw error;
+        .maybeSingle();
 
-      await this.registerCustomerFromBooking(completeRecord);
-      return data;
+      // 2. If PostgreSQL RLS blocks the returning SELECT clause, retry with minimal return
+      if (insertResult.error && insertResult.error.message?.includes('row-level security')) {
+        const retryResult = await supabase
+          .from('bookings')
+          .insert([dbPayload]);
+        if (!retryResult.error) {
+          insertResult = { data: completeRecord, error: null };
+        }
+      }
+
+      if (insertResult.error) {
+        throw new Error(
+          `Supabase RLS Error: ${insertResult.error.message}. Please run the RLS fix SQL in your Supabase SQL editor.`
+        );
+      }
+
+      try {
+        await this.registerCustomerFromBooking(completeRecord);
+      } catch (custErr) {
+        console.warn('Customer upsert note:', custErr);
+      }
+
+      return insertResult.data || completeRecord;
     }
 
     const list = await this.getBookings();

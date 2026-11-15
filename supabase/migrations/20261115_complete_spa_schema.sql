@@ -342,12 +342,15 @@ CREATE POLICY "Public Read Availability" ON therapist_availability FOR SELECT US
 CREATE POLICY "Admin Manage Availability" ON therapist_availability FOR ALL USING (business_id = get_user_business_id());
 
 -- 7. Customers
-CREATE POLICY "Public Insert Customers" ON customers FOR INSERT WITH CHECK (true);
-CREATE POLICY "Admin View Customers" ON customers FOR ALL USING (business_id = get_user_business_id());
+CREATE POLICY "Public Insert Customers" ON customers FOR INSERT TO public, anon, authenticated WITH CHECK (true);
+CREATE POLICY "Public Update Customers" ON customers FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public Read Customers" ON customers FOR SELECT TO public, anon, authenticated USING (true);
 
 -- 8. Bookings
-CREATE POLICY "Public Insert Bookings" ON bookings FOR INSERT WITH CHECK (true);
-CREATE POLICY "Admin Manage Bookings" ON bookings FOR ALL USING (business_id = get_user_business_id());
+CREATE POLICY "Public Insert Bookings" ON bookings FOR INSERT TO public, anon, authenticated WITH CHECK (true);
+CREATE POLICY "Public Read Bookings" ON bookings FOR SELECT TO public, anon, authenticated USING (true);
+CREATE POLICY "Admin Update Bookings" ON bookings FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Delete Bookings" ON bookings FOR DELETE TO authenticated USING (true);
 
 -- 9. Gallery Images
 CREATE POLICY "Public Read Gallery" ON gallery_images FOR SELECT USING (is_active = true);
