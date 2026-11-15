@@ -575,20 +575,44 @@ export const dbService = {
       therapist_id: assignedTherapistId,
       therapist_name: assignedTherapistName,
       duration,
-      buffer_minutes: bufferMinutes,
       booking_status: bookingData.booking_status || 'pending',
       payment_status: bookingData.payment_status || 'unpaid',
       payment_method: bookingData.payment_method || 'pay_at_spa',
       created_at: new Date().toISOString()
     };
 
+    // Sanitize payload strictly to existing schema columns in Supabase 'bookings' table
+    const dbPayload = {
+      id: completeRecord.id,
+      business_id: completeRecord.business_id,
+      booking_reference: completeRecord.booking_reference,
+      customer_name: completeRecord.customer_name,
+      customer_phone: completeRecord.customer_phone,
+      customer_email: completeRecord.customer_email,
+      service_id: completeRecord.service_id,
+      service_name: completeRecord.service_name,
+      therapist_id: completeRecord.therapist_id,
+      therapist_name: completeRecord.therapist_name,
+      booking_date: completeRecord.booking_date,
+      booking_time: completeRecord.booking_time,
+      duration: completeRecord.duration || '60 Mins',
+      total_price: Number(completeRecord.total_price),
+      booking_status: completeRecord.booking_status || 'pending',
+      payment_status: completeRecord.payment_status || 'unpaid',
+      payment_method: completeRecord.payment_method || 'pay_at_spa',
+      notes: completeRecord.notes || '',
+      created_at: completeRecord.created_at
+    };
+
     if (isSupabaseConfigured) {
       const { data, error } = await supabase
         .from('bookings')
-        .insert([completeRecord])
+        .insert([dbPayload])
         .select()
         .single();
       if (error) throw error;
+
+      await this.registerCustomerFromBooking(completeRecord);
       return data;
     }
 
@@ -709,14 +733,55 @@ export const dbService = {
   },
 
   async registerCustomerFromBooking(booking) {
+    if (isSupabaseConfigured) {
+      try {
+        const { data: existing } = await supabase
+          .from('customers')
+          .select('id, total_bookings, total_spent')
+          .eq('business_id', booking.business_id || currentBusinessId)
+          .eq('email', booking.customer_email)
+          .maybeSingle();
+
+        if (existing) {
+          await supabase
+            .from('customers')
+            .update({
+              name: booking.customer_name,
+              phone: booking.customer_phone,
+              total_bookings: (existing.total_bookings || 1) + 1,
+              total_spent: Number(existing.total_spent || 0) + Number(booking.total_price || 0),
+              last_visit: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', existing.id);
+        } else {
+          await supabase
+            .from('customers')
+            .insert([{
+              business_id: booking.business_id || currentBusinessId,
+              name: booking.customer_name,
+              phone: booking.customer_phone,
+              email: booking.customer_email,
+              notes: booking.notes || 'Website reservation',
+              total_bookings: 1,
+              total_spent: Number(booking.total_price || 0),
+              last_visit: new Date().toISOString()
+            }]);
+        }
+      } catch (err) {
+        console.warn('Customer Supabase registration non-critical note:', err);
+      }
+    }
+
+    // Local storage fallback
     const customers = await this.getCustomers();
     const existingIndex = customers.findIndex(
-      (c) => c.email.toLowerCase() === booking.customer_email.toLowerCase()
+      (c) => c.email && c.email.toLowerCase() === (booking.customer_email || '').toLowerCase()
     );
 
     if (existingIndex >= 0) {
       customers[existingIndex].total_bookings = (customers[existingIndex].total_bookings || 1) + 1;
-      customers[existingIndex].total_spent = (customers[existingIndex].total_spent || 0) + (booking.total_price || 0);
+      customers[existingIndex].total_spent = (customers[existingIndex].total_spent || 0) + (Number(booking.total_price) || 0);
       customers[existingIndex].updated_at = new Date().toISOString();
     } else {
       customers.unshift({
@@ -726,7 +791,7 @@ export const dbService = {
         email: booking.customer_email,
         notes: booking.notes || "New reservation",
         total_bookings: 1,
-        total_spent: booking.total_price || 0,
+        total_spent: Number(booking.total_price) || 0,
         created_at: new Date().toISOString()
       });
     }

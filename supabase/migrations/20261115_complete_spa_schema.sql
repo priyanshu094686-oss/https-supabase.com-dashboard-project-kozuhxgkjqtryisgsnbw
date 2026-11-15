@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   booking_date DATE NOT NULL,
   booking_time VARCHAR(50) NOT NULL,
   duration VARCHAR(50) DEFAULT '60 Mins',
+  buffer_minutes INT DEFAULT 15,
   total_price NUMERIC(10, 2) NOT NULL,
   booking_status VARCHAR(50) DEFAULT 'pending' CHECK (booking_status IN ('pending', 'confirmed', 'completed', 'cancelled')),
   payment_status VARCHAR(50) DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid', 'deposit_paid', 'paid', 'refunded')),
@@ -202,6 +203,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Ensure buffer_minutes exists if table was previously created
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buffer_minutes INT DEFAULT 15;
 
 -- Server-Side Double-Booking Prevention Trigger
 CREATE OR REPLACE FUNCTION check_booking_conflict()
