@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Calendar as CalendarIcon,
   Search,
@@ -18,20 +18,33 @@ import {
   ChevronRight,
   ShieldCheck,
   CreditCard,
-  FileText
+  FileText,
+  RotateCcw,
+  Sparkles,
+  Info
 } from 'lucide-react';
 import AdminLayout from '../../components/admin/AdminLayout';
 import { useBooking } from '../../context/BookingContext';
 import { useSettings } from '../../context/SettingsContext';
+import { notificationService } from '../../services/notificationService';
 
 export default function AdminBookingsPage() {
-  const { bookings, services, updateBookingStatus } = useBooking();
+  const {
+    bookings,
+    services,
+    therapists,
+    updateBookingStatus,
+    rescheduleBooking,
+    getSlotAvailability
+  } = useBooking();
   const { formatPrice, settings } = useSettings();
 
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [timeRangeFilter, setTimeRangeFilter] = useState('all'); // 'all' | 'today' | 'upcoming'
   const [serviceFilter, setServiceFilter] = useState('all');
+  const [therapistFilter, setTherapistFilter] = useState('all');
   const [dateFilter, setDateFilter] = useState('');
 
   // Modals
@@ -39,8 +52,27 @@ export default function AdminBookingsPage() {
   const [cancelModalBooking, setCancelModalBooking] = useState(null);
   const [cancellationReason, setCancellationReason] = useState('Client requested cancellation');
 
+  // Reschedule Modal State
+  const [rescheduleBookingTarget, setRescheduleBookingTarget] = useState(null);
+  const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduleTime, setRescheduleTime] = useState('');
+  const [rescheduleTherapistId, setRescheduleTherapistId] = useState('');
+  const [rescheduleSubmitting, setRescheduleSubmitting] = useState(false);
+  const [rescheduleError, setRescheduleError] = useState('');
+
   // Calendar State
   const [calendarDate, setCalendarDate] = useState(new Date());
+
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  // Count helper metrics
+  const todayCount = useMemo(() => {
+    return bookings.filter((b) => b.booking_date === todayStr && b.booking_status !== 'cancelled').length;
+  }, [bookings, todayStr]);
+
+  const upcomingCount = useMemo(() => {
+    return bookings.filter((b) => b.booking_date >= todayStr && b.booking_status !== 'cancelled').length;
+  }, [bookings, todayStr]);
 
   // Filter bookings
   const filteredBookings = bookings.filter((b) => {
@@ -51,13 +83,22 @@ export default function AdminBookingsPage() {
       b.customer_phone?.includes(q) ||
       b.customer_email?.toLowerCase().includes(q) ||
       b.booking_reference?.toLowerCase().includes(q) ||
-      b.therapist_name?.toLowerCase().includes(q);
+      b.therapist_name?.toLowerCase().includes(q) ||
+      b.service_name?.toLowerCase().includes(q);
 
     const matchesStatus = statusFilter === 'all' || b.booking_status === statusFilter;
     const matchesService = serviceFilter === 'all' || b.service_id === serviceFilter || b.service_name === serviceFilter;
+    const matchesTherapist = therapistFilter === 'all' || b.therapist_id === therapistFilter;
     const matchesDate = !dateFilter || b.booking_date === dateFilter;
 
-    return matchesSearch && matchesStatus && matchesService && matchesDate;
+    let matchesTimeRange = true;
+    if (timeRangeFilter === 'today') {
+      matchesTimeRange = b.booking_date === todayStr;
+    } else if (timeRangeFilter === 'upcoming') {
+      matchesTimeRange = b.booking_date >= todayStr;
+    }
+
+    return matchesSearch && matchesStatus && matchesService && matchesTherapist && matchesDate && matchesTimeRange;
   });
 
   const handleConfirmCancel = async () => {
@@ -65,6 +106,57 @@ export default function AdminBookingsPage() {
     await updateBookingStatus(cancelModalBooking.id, 'cancelled', cancellationReason);
     setCancelModalBooking(null);
     setCancellationReason('Client requested cancellation');
+  };
+
+  // Open Reschedule Modal
+  const openRescheduleModal = (booking) => {
+    setRescheduleBookingTarget(booking);
+    setRescheduleDate(booking.booking_date || todayStr);
+    setRescheduleTime(booking.booking_time || '02:30 PM');
+    setRescheduleTherapistId(booking.therapist_id || 'any');
+    setRescheduleError('');
+  };
+
+  // Calculate slots for rescheduling modal
+  const rescheduleSlots = useMemo(() => {
+    if (!rescheduleBookingTarget || !rescheduleDate || !getSlotAvailability) return [];
+    return getSlotAvailability(
+      rescheduleTherapistId,
+      rescheduleDate,
+      rescheduleBookingTarget.duration || '60 Mins'
+    );
+  }, [rescheduleBookingTarget, rescheduleDate, rescheduleTherapistId, getSlotAvailability]);
+
+  // Handle Reschedule Submit
+  const handleConfirmReschedule = async () => {
+    if (!rescheduleBookingTarget || !rescheduleDate || !rescheduleTime) {
+      setRescheduleError('Please choose both a valid date and available time slot.');
+      return;
+    }
+
+    setRescheduleSubmitting(true);
+    setRescheduleError('');
+    try {
+      const targetTh = therapists.find((t) => t.id === rescheduleTherapistId);
+      const thName = targetTh ? targetTh.name : rescheduleBookingTarget.therapist_name;
+
+      await rescheduleBooking(
+        rescheduleBookingTarget.id,
+        rescheduleDate,
+        rescheduleTime,
+        rescheduleTherapistId,
+        thName
+      );
+
+      setRescheduleBookingTarget(null);
+      if (detailsBooking && detailsBooking.id === rescheduleBookingTarget.id) {
+        setDetailsBooking(null);
+      }
+    } catch (err) {
+      setRescheduleError(err.message || 'Failed to reschedule appointment.');
+    } finally {
+      setRescheduleSubmitting(false);
+    }
   };
 
   // Calendar Helpers
@@ -90,39 +182,107 @@ export default function AdminBookingsPage() {
     return bookings.filter((b) => b.booking_date === dStr);
   };
 
+  const isEmailConfigured = notificationService.isEmailConfigured();
+
   return (
     <AdminLayout
       title="Appointment Reservations Manager"
-      subtitle="Comprehensive control of all customer bookings, approvals, and double-booking conflict prevention."
+      subtitle="Comprehensive control of customer bookings, status transitions, live rescheduling, and double-booking conflict prevention."
     >
       <div className="space-y-6">
-        {/* Top View Toggle & Summary */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-[#0e121c] border border-stone-800">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setViewMode('list')}
-              className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
-                viewMode === 'list'
-                  ? 'bg-gradient-to-r from-gold-500 to-gold-600 text-stone-950 shadow-gold-sm'
-                  : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
-              }`}
-            >
-              <List className="w-4 h-4" />
-              <span>List View ({bookings.length})</span>
-            </button>
-            <button
-              onClick={() => setViewMode('calendar')}
-              className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
-                viewMode === 'calendar'
-                  ? 'bg-gradient-to-r from-gold-500 to-gold-600 text-stone-950 shadow-gold-sm'
-                  : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
-              }`}
-            >
-              <CalendarIcon className="w-4 h-4" />
-              <span>Calendar View</span>
-            </button>
+        {/* Email Notification Provider Notice Banner */}
+        <div className="p-4 rounded-2xl bg-[#121622] border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2.5">
+            <div className={`w-2.5 h-2.5 rounded-full ${isEmailConfigured ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+            <div>
+              <span className="font-semibold text-stone-200">
+                Email Dispatch Engine: {isEmailConfigured ? 'Active (Live Resend/SMTP)' : 'Simulated / Logged Mode'}
+              </span>
+              <p className="text-[11px] text-stone-400 mt-0.5">
+                {isEmailConfigured
+                  ? 'Real emails are actively dispatched to guests upon confirmation, cancellation, and rescheduling.'
+                  : 'All appointments and notification payloads are captured and logged in the database. Set VITE_RESEND_API_KEY in .env for external SMTP delivery.'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-center">
+            <span className="px-2.5 py-1 rounded-lg bg-stone-900 border border-stone-700 text-gold-400 font-mono text-[11px]">
+              {bookings.length} Total Records
+            </span>
+          </div>
+        </div>
+
+        {/* Top View Toggle & Time Quick Filters */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 rounded-2xl bg-[#0e121c] border border-stone-800">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* View Mode Toggle */}
+            <div className="flex items-center bg-stone-900 p-1 rounded-xl border border-stone-800 mr-2">
+              <button
+                onClick={() => setViewMode('list')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                  viewMode === 'list'
+                    ? 'bg-gradient-to-r from-gold-500 to-gold-600 text-stone-950 shadow-gold-sm'
+                    : 'text-stone-400 hover:text-stone-200'
+                }`}
+              >
+                <List className="w-3.5 h-3.5" />
+                <span>List View</span>
+              </button>
+              <button
+                onClick={() => setViewMode('calendar')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                  viewMode === 'calendar'
+                    ? 'bg-gradient-to-r from-gold-500 to-gold-600 text-stone-950 shadow-gold-sm'
+                    : 'text-stone-400 hover:text-stone-200'
+                }`}
+              >
+                <CalendarIcon className="w-3.5 h-3.5" />
+                <span>Calendar View</span>
+              </button>
+            </div>
+
+            {/* Quick Time Range Tabs */}
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setTimeRangeFilter('all')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
+                  timeRangeFilter === 'all'
+                    ? 'bg-stone-800 text-gold-400 border border-gold-500/40 font-semibold'
+                    : 'bg-stone-900/60 text-stone-400 hover:text-stone-200 border border-stone-850'
+                }`}
+              >
+                All Dates
+              </button>
+              <button
+                onClick={() => setTimeRangeFilter('today')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  timeRangeFilter === 'today'
+                    ? 'bg-gold-500 text-stone-950 font-bold shadow-gold-sm'
+                    : 'bg-stone-900/60 text-stone-300 hover:text-white border border-stone-850'
+                }`}
+              >
+                <span>Today's</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${timeRangeFilter === 'today' ? 'bg-stone-950 text-gold-400' : 'bg-stone-800 text-stone-300'}`}>
+                  {todayCount}
+                </span>
+              </button>
+              <button
+                onClick={() => setTimeRangeFilter('upcoming')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  timeRangeFilter === 'upcoming'
+                    ? 'bg-gold-500 text-stone-950 font-bold shadow-gold-sm'
+                    : 'bg-stone-900/60 text-stone-300 hover:text-white border border-stone-850'
+                }`}
+              >
+                <span>Upcoming</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${timeRangeFilter === 'upcoming' ? 'bg-stone-950 text-gold-400' : 'bg-stone-800 text-stone-300'}`}>
+                  {upcomingCount}
+                </span>
+              </button>
+            </div>
           </div>
 
+          {/* Status color legends */}
           <div className="flex items-center gap-3 text-xs text-stone-400">
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-amber-400" /> Pending
@@ -132,6 +292,9 @@ export default function AdminBookingsPage() {
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-blue-400" /> Completed
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-400" /> Cancelled
             </span>
           </div>
         </div>
@@ -257,21 +420,21 @@ export default function AdminBookingsPage() {
           <>
             {/* Search & Filters Bar */}
             <div className="p-5 rounded-2xl bg-[#0e121c] border border-stone-800 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-center">
                 {/* Search Input */}
-                <div className="md:col-span-5 relative">
+                <div className="lg:col-span-4 relative">
                   <Search className="w-4 h-4 text-stone-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search by customer, phone, ref or therapist..."
+                    placeholder="Search guest, phone, ref, specialist..."
                     className="w-full bg-[#131722] border border-stone-700 rounded-xl pl-10 pr-3.5 py-2.5 text-xs sm:text-sm text-stone-100 placeholder-stone-500 focus:outline-none focus:border-gold-400"
                   />
                 </div>
 
                 {/* Service Filter */}
-                <div className="md:col-span-4">
+                <div className="lg:col-span-3">
                   <select
                     value={serviceFilter}
                     onChange={(e) => setServiceFilter(e.target.value)}
@@ -286,18 +449,34 @@ export default function AdminBookingsPage() {
                   </select>
                 </div>
 
-                {/* Date Filter */}
-                <div className="md:col-span-3 flex items-center gap-2">
+                {/* Therapist Filter */}
+                <div className="lg:col-span-3">
+                  <select
+                    value={therapistFilter}
+                    onChange={(e) => setTherapistFilter(e.target.value)}
+                    className="w-full bg-[#131722] border border-stone-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-stone-200 focus:outline-none focus:border-gold-400"
+                  >
+                    <option value="all">All Therapists ({therapists.length})</option>
+                    {therapists.map((th) => (
+                      <option key={th.id} value={th.id}>
+                        {th.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Specific Date Filter */}
+                <div className="lg:col-span-2 flex items-center gap-1.5">
                   <input
                     type="date"
                     value={dateFilter}
                     onChange={(e) => setDateFilter(e.target.value)}
-                    className="w-full bg-[#131722] border border-stone-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-stone-200 focus:outline-none focus:border-gold-400"
+                    className="w-full bg-[#131722] border border-stone-700 rounded-xl px-2.5 py-2 text-xs text-stone-200 focus:outline-none focus:border-gold-400"
                   />
                   {dateFilter && (
                     <button
                       onClick={() => setDateFilter('')}
-                      className="p-2 text-stone-400 hover:text-stone-100 text-xs"
+                      className="p-2 text-stone-400 hover:text-stone-100 text-xs shrink-0"
                       title="Clear Date"
                     >
                       <X className="w-4 h-4" />
@@ -312,9 +491,9 @@ export default function AdminBookingsPage() {
                   <button
                     key={st}
                     onClick={() => setStatusFilter(st)}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${
                       statusFilter === st
-                        ? 'bg-gold-500 text-stone-950 shadow-gold-sm'
+                        ? 'bg-gold-500 text-stone-950 shadow-gold-sm font-bold'
                         : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
                     }`}
                   >
@@ -340,14 +519,14 @@ export default function AdminBookingsPage() {
                 <div className="text-center py-16 text-stone-500">
                   <CalendarIcon className="w-12 h-12 mx-auto text-stone-600 mb-3" />
                   <p className="text-base font-serif text-stone-300">No matching reservations found</p>
-                  <p className="text-xs mt-1">Try adjusting your search query, status, or date filter.</p>
+                  <p className="text-xs mt-1">Try adjusting your search query, therapist, or date filters.</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead className="bg-stone-900/80 text-[11px] uppercase tracking-wider text-stone-400 border-b border-stone-800">
                       <tr>
-                        <th className="py-3 px-4">Ref & Time</th>
+                        <th className="py-3 px-4">Ref & Schedule</th>
                         <th className="py-3 px-4">Guest Details</th>
                         <th className="py-3 px-4">Treatment</th>
                         <th className="py-3 px-4">Specialist</th>
@@ -421,12 +600,26 @@ export default function AdminBookingsPage() {
                             {/* Inspect Details Button */}
                             <button
                               onClick={() => setDetailsBooking(b)}
-                              className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-stone-800 text-stone-300 border border-stone-700 hover:text-white hover:border-gold-400 transition-colors"
+                              className="px-2 py-1 rounded-lg text-xs font-semibold bg-stone-800 text-stone-300 border border-stone-700 hover:text-white hover:border-gold-400 transition-colors"
                               title="Inspect Booking Details"
                             >
                               <Eye className="w-3.5 h-3.5" />
                             </button>
 
+                            {/* Reschedule Button */}
+                            {b.booking_status !== 'cancelled' && b.booking_status !== 'completed' && (
+                              <button
+                                onClick={() => openRescheduleModal(b)}
+                                className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-gold-500/10 text-gold-400 border border-gold-500/30 hover:bg-gold-500/20 transition-colors"
+                                title="Reschedule Appointment"
+                              >
+                                <span className="flex items-center gap-1">
+                                  <RotateCcw className="w-3 h-3" /> Reschedule
+                                </span>
+                              </button>
+                            )}
+
+                            {/* Approve / Confirm Button */}
                             {b.booking_status === 'pending' && (
                               <button
                                 onClick={() => updateBookingStatus(b.id, 'confirmed')}
@@ -437,6 +630,7 @@ export default function AdminBookingsPage() {
                               </button>
                             )}
 
+                            {/* Complete Button */}
                             {b.booking_status === 'confirmed' && (
                               <button
                                 onClick={() => updateBookingStatus(b.id, 'completed')}
@@ -447,16 +641,18 @@ export default function AdminBookingsPage() {
                               </button>
                             )}
 
+                            {/* Cancel Button */}
                             {b.booking_status !== 'cancelled' && b.booking_status !== 'completed' && (
                               <button
                                 onClick={() => setCancelModalBooking(b)}
-                                className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20"
+                                className="px-2 py-1 rounded-lg text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20"
                                 title="Cancel Reservation"
                               >
                                 Cancel
                               </button>
                             )}
 
+                            {/* WhatsApp Button */}
                             <a
                               href={`https://wa.me/${b.customer_phone.replace(/[^\d]/g, '')}?text=${encodeURIComponent(
                                 `Hello ${b.customer_name}, regarding your reservation ${b.booking_reference} at ${settings?.business_name}...`
@@ -479,6 +675,132 @@ export default function AdminBookingsPage() {
           </>
         )}
       </div>
+
+      {/* RESCHEDULE MODAL */}
+      {rescheduleBookingTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="w-full max-w-lg bg-[#0e121c] border border-gold-500/40 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-800">
+              <div className="flex items-center gap-2">
+                <RotateCcw className="w-5 h-5 text-gold-400" />
+                <div>
+                  <h3 className="text-lg font-serif font-bold text-stone-100">
+                    Reschedule Appointment
+                  </h3>
+                  <p className="text-xs text-gold-400 font-mono">
+                    {rescheduleBookingTarget.booking_reference} • {rescheduleBookingTarget.customer_name}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setRescheduleBookingTarget(null)}
+                className="w-8 h-8 rounded-full bg-stone-800 text-stone-400 hover:text-stone-100 flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {rescheduleError && (
+              <div className="p-3 rounded-xl bg-red-950/60 border border-red-500/40 text-red-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{rescheduleError}</span>
+              </div>
+            )}
+
+            <div className="space-y-4 text-xs">
+              {/* Treatment info */}
+              <div className="p-3 rounded-xl bg-stone-900 border border-stone-800 flex justify-between items-center">
+                <div>
+                  <span className="text-stone-400 block text-[10px] uppercase">Service Modality:</span>
+                  <strong className="text-stone-200">{rescheduleBookingTarget.service_name}</strong>
+                </div>
+                <span className="text-gold-400 font-semibold">{rescheduleBookingTarget.duration || '60 Mins'}</span>
+              </div>
+
+              {/* Specialist Selector */}
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-stone-300 font-semibold mb-1">
+                  Reassign Specialist
+                </label>
+                <select
+                  value={rescheduleTherapistId}
+                  onChange={(e) => setRescheduleTherapistId(e.target.value)}
+                  className="w-full bg-[#131722] border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-100 focus:outline-none focus:border-gold-400"
+                >
+                  <option value="any">✨ Any Available Specialist</option>
+                  {therapists.map((th) => (
+                    <option key={th.id} value={th.id}>
+                      {th.name} ({th.specialization})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* New Date Selector */}
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-stone-300 font-semibold mb-1">
+                  New Appointment Date *
+                </label>
+                <input
+                  type="date"
+                  value={rescheduleDate}
+                  min={todayStr}
+                  onChange={(e) => setRescheduleDate(e.target.value)}
+                  className="w-full bg-[#131722] border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-100 focus:outline-none focus:border-gold-400"
+                />
+              </div>
+
+              {/* Dynamic Slot Matrix */}
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-stone-300 font-semibold mb-1.5">
+                  Select Available Time Slot *
+                </label>
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-48 overflow-y-auto p-1">
+                  {rescheduleSlots.map(({ slot, available, reason }) => {
+                    const isSelected = rescheduleTime === slot;
+                    return (
+                      <button
+                        key={slot}
+                        type="button"
+                        disabled={!available}
+                        onClick={() => setRescheduleTime(slot)}
+                        className={`p-2 rounded-lg text-[10px] font-semibold border transition-all flex flex-col items-center justify-center ${
+                          !available
+                            ? 'bg-stone-900/30 text-stone-600 border-stone-850 cursor-not-allowed line-through'
+                            : isSelected
+                            ? 'bg-gold-500 text-stone-950 border-gold-400 font-bold shadow-gold-sm'
+                            : 'bg-[#141824] text-stone-300 border-stone-700 hover:border-gold-500/50'
+                        }`}
+                      >
+                        <span>{slot.split(' ')[0]} {slot.split(' ')[1]}</span>
+                        <span className="text-[8px] font-normal opacity-80">{available ? 'Open' : reason || 'Booked'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => setRescheduleBookingTarget(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-stone-400 hover:text-stone-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReschedule}
+                disabled={rescheduleSubmitting || !rescheduleTime}
+                className="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-gold-500 to-gold-600 hover:from-gold-400 hover:to-gold-500 text-stone-950 shadow-gold-sm transition-all disabled:opacity-50"
+              >
+                {rescheduleSubmitting ? 'Updating Schedule...' : 'Save & Confirm Reschedule'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Booking Details Modal */}
       {detailsBooking && (
@@ -594,6 +916,18 @@ export default function AdminBookingsPage() {
               </div>
 
               <div className="flex items-center gap-2">
+                {detailsBooking.booking_status !== 'cancelled' && detailsBooking.booking_status !== 'completed' && (
+                  <button
+                    onClick={() => {
+                      const b = detailsBooking;
+                      setDetailsBooking(null);
+                      openRescheduleModal(b);
+                    }}
+                    className="px-3 py-2 rounded-xl text-xs font-semibold bg-gold-500/10 text-gold-400 border border-gold-500/30 hover:bg-gold-500/20"
+                  >
+                    Reschedule
+                  </button>
+                )}
                 {detailsBooking.booking_status === 'pending' && (
                   <button
                     onClick={() => {

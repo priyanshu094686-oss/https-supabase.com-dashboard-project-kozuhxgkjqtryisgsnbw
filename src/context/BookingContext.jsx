@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { dbService } from '../lib/supabase';
 import { notificationService } from '../services/notificationService';
+import { availabilityService } from '../services/availabilityService';
 import { useSettings } from './SettingsContext';
 
 const BookingContext = createContext(null);
@@ -44,17 +45,29 @@ export function BookingProvider({ children }) {
   /**
    * Check if a specific time slot is already booked for a therapist on a date
    */
-  const isSlotBooked = (therapistId, date, timeSlot) => {
-    if (!therapistId || therapistId === 'any' || therapistId.includes('Any')) {
-      return false;
-    }
-    return bookings.some(
-      (b) =>
-        b.therapist_id === therapistId &&
-        b.booking_date === date &&
-        b.booking_time === timeSlot &&
-        b.booking_status !== 'cancelled'
+  const isSlotBooked = (therapistId, date, timeSlot, duration = '60 Mins') => {
+    return availabilityService.isTherapistOccupied(
+      therapistId,
+      date,
+      timeSlot,
+      duration,
+      bookings,
+      settings?.booking_buffer_minutes || 15
     );
+  };
+
+  /**
+   * Calculate all available slots for given parameters
+   */
+  const getSlotAvailability = (therapistId, dateStr, duration = '60 Mins') => {
+    return availabilityService.calculateSlotAvailability({
+      therapistId,
+      dateStr,
+      serviceDuration: duration,
+      bufferMinutes: settings?.booking_buffer_minutes || 15,
+      therapists,
+      existingBookings: bookings
+    });
   };
 
   /**
@@ -73,35 +86,45 @@ export function BookingProvider({ children }) {
   };
 
   /**
-   * Create a new appointment booking with conflict checking
+   * Create a new appointment booking with conflict checking & server validation
    */
   const createBooking = async (bookingData) => {
-    // 1. Conflict validation
-    const hasConflict = isSlotBooked(
-      bookingData.therapist_id,
-      bookingData.booking_date,
-      bookingData.booking_time
-    );
+    // 1. Insert into database/store with concurrency guard
+    const newBooking = await dbService.createBooking({
+      ...bookingData,
+      buffer_minutes: settings?.booking_buffer_minutes || 15
+    });
 
-    if (hasConflict) {
-      throw new Error(
-        `Specialist conflict: ${bookingData.therapist_name} is already reserved for ${bookingData.booking_date} at ${bookingData.booking_time}. Please pick an open time slot.`
-      );
-    }
-
-    // 2. Insert into database/store
-    const newBooking = await dbService.createBooking(bookingData);
-
-    // 3. Dispatch notifications
+    // 2. Dispatch notifications
     await notificationService.sendNotification('customer_confirmation', newBooking, settings);
     await notificationService.sendNotification('admin_alert', newBooking, settings);
 
-    // 4. Update local state
+    // 3. Update local state
     setBookings((prev) => [newBooking, ...prev]);
     const updatedCustomers = await dbService.getCustomers();
     setCustomers(updatedCustomers);
 
     return newBooking;
+  };
+
+  /**
+   * Reschedule an existing booking
+   */
+  const rescheduleBooking = async (id, newDate, newTime, newTherapistId = null, newTherapistName = null) => {
+    const existing = bookings.find((b) => b.id === id);
+    const prevDetails = existing
+      ? { date: existing.booking_date, time: existing.booking_time }
+      : { date: 'N/A', time: 'N/A' };
+
+    const updated = await dbService.rescheduleBooking(id, newDate, newTime, newTherapistId, newTherapistName);
+    setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+
+    // Send rescheduling notification
+    await notificationService.sendNotification('reschedule', updated, settings, {
+      previousDetails: prevDetails
+    });
+
+    return updated;
   };
 
   /**
@@ -180,8 +203,10 @@ export function BookingProvider({ children }) {
         loading,
         refreshData,
         isSlotBooked,
+        getSlotAvailability,
         getBookedSlotsForDate,
         createBooking,
+        rescheduleBooking,
         updateBookingStatus,
         addService,
         editService,

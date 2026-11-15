@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { availabilityService } from '../services/availabilityService';
 import { servicesData as initialServices } from '../data/servicesData';
 import { therapistsData as initialTherapists } from '../data/therapistsData';
 import { galleryData as initialGallery } from '../data/galleryData';
@@ -465,34 +466,101 @@ export const dbService = {
   },
 
   /**
-   * Check if a therapist is already booked on a date and time slot
+   * Check if a therapist is already booked or occupied on a date and time slot
    */
-  async checkDoubleBooking(therapistId, bookingDate, bookingTime) {
-    if (!therapistId || therapistId === 'any' || therapistId.includes('Any')) {
-      return false; // Any therapist is flexible
+  async checkDoubleBooking(therapistId, bookingDate, bookingTime, duration = '60 Mins', bufferMinutes = 15) {
+    if (!therapistId || therapistId === 'any' || therapistId.toLowerCase().includes('any')) {
+      return false; // Flexible pool
     }
 
     const bookings = await this.getBookings();
-    return bookings.some(
-      (b) =>
-        b.therapist_id === therapistId &&
-        b.booking_date === bookingDate &&
-        b.booking_time === bookingTime &&
-        b.booking_status !== 'cancelled'
+    return availabilityService.isTherapistOccupied(
+      therapistId,
+      bookingDate,
+      bookingTime,
+      duration,
+      bookings,
+      bufferMinutes
     );
   },
 
   async createBooking(bookingData) {
+    const bufferMinutes = bookingData.buffer_minutes || 15;
+    const duration = bookingData.duration || '60 Mins';
+
+    // 1. Check if date/time is in the past
+    if (availabilityService.isTimeInPast(bookingData.booking_date, bookingData.booking_time)) {
+      throw new Error('Invalid reservation schedule: Cannot book appointment slots in the past.');
+    }
+
+    // 2. Conflict validation taking duration + buffer into account
     const isConflict = await this.checkDoubleBooking(
       bookingData.therapist_id,
       bookingData.booking_date,
-      bookingData.booking_time
+      bookingData.booking_time,
+      duration,
+      bufferMinutes
     );
 
     if (isConflict) {
       throw new Error(
-        `This specialist is already reserved on ${bookingData.booking_date} at ${bookingData.booking_time}. Please select another time or specialist.`
+        `This specialist is already reserved on ${bookingData.booking_date} around ${bookingData.booking_time}. Please select another time or specialist.`
       );
+    }
+
+    // 3. Resolve specialist if "any" was selected
+    let assignedTherapistId = bookingData.therapist_id;
+    let assignedTherapistName = bookingData.therapist_name;
+
+    if (!assignedTherapistId || assignedTherapistId === 'any' || assignedTherapistId.toLowerCase().includes('any')) {
+      const therapists = await this.getTherapists();
+      const existingBookings = await this.getBookings();
+      const resolved = availabilityService.resolveTherapist({
+        therapistId: 'any',
+        dateStr: bookingData.booking_date,
+        timeStr: bookingData.booking_time,
+        serviceDuration: duration,
+        therapists,
+        existingBookings,
+        bufferMinutes
+      });
+      assignedTherapistId = resolved.id;
+      assignedTherapistName = resolved.name;
+    }
+
+    // 4. Try Supabase Atomic RPC first if connected
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase.rpc('book_spa_appointment', {
+          p_business_id: bookingData.business_id || currentBusinessId,
+          p_service_id: bookingData.service_id,
+          p_service_name: bookingData.service_name,
+          p_therapist_id: assignedTherapistId,
+          p_therapist_name: assignedTherapistName,
+          p_booking_date: bookingData.booking_date,
+          p_booking_time: bookingData.booking_time,
+          p_duration: duration,
+          p_total_price: Number(bookingData.total_price),
+          p_customer_name: bookingData.customer_name,
+          p_customer_phone: bookingData.customer_phone,
+          p_customer_email: bookingData.customer_email,
+          p_payment_method: bookingData.payment_method || 'pay_at_spa',
+          p_notes: bookingData.notes || null,
+          p_buffer_minutes: bufferMinutes
+        });
+
+        if (!error && data) {
+          return data;
+        }
+        if (error && error.message && error.message.includes('Double-Booking Conflict')) {
+          throw new Error(error.message);
+        }
+      } catch (rpcErr) {
+        if (rpcErr.message && rpcErr.message.includes('Double-Booking Conflict')) {
+          throw rpcErr;
+        }
+        // Fallback to direct table insertion if RPC is not yet created in remote DB
+      }
     }
 
     // Generate unique booking reference LL-YYYY-XXXX
@@ -504,6 +572,10 @@ export const dbService = {
       id: `bk-${Date.now()}`,
       business_id: bookingData.business_id || currentBusinessId,
       booking_reference,
+      therapist_id: assignedTherapistId,
+      therapist_name: assignedTherapistName,
+      duration,
+      buffer_minutes: bufferMinutes,
       booking_status: bookingData.booking_status || 'pending',
       payment_status: bookingData.payment_status || 'unpaid',
       payment_method: bookingData.payment_method || 'pay_at_spa',
@@ -550,6 +622,74 @@ export const dbService = {
 
     const list = await this.getBookings();
     const updated = list.map((b) => (b.id === id ? { ...b, ...updates } : b));
+    setStored(STORAGE_KEYS.BOOKINGS, updated);
+    return updated.find((b) => b.id === id);
+  },
+
+  async rescheduleBooking(id, newDate, newTime, newTherapistId = null, newTherapistName = null) {
+    // Prevent past date/time
+    if (availabilityService.isTimeInPast(newDate, newTime)) {
+      throw new Error('Cannot reschedule to a past date or time.');
+    }
+
+    // Try Supabase RPC first
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase.rpc('reschedule_spa_appointment', {
+          p_booking_id: id,
+          p_new_date: newDate,
+          p_new_time: newTime,
+          p_new_therapist_id: newTherapistId,
+          p_new_therapist_name: newTherapistName
+        });
+        if (!error && data) return data;
+      } catch (err) {
+        // Fall back to table update
+      }
+    }
+
+    const bookings = await this.getBookings();
+    const target = bookings.find((b) => b.id === id);
+    if (!target) throw new Error('Booking not found.');
+
+    const finalTherapistId = newTherapistId || target.therapist_id;
+    const finalTherapistName = newTherapistName || target.therapist_name;
+
+    // Check conflict (excluding current booking id)
+    const isOccupied = bookings.some(
+      (b) =>
+        b.id !== id &&
+        b.therapist_id === finalTherapistId &&
+        b.booking_date === newDate &&
+        b.booking_time === newTime &&
+        b.booking_status !== 'cancelled'
+    );
+
+    if (isOccupied) {
+      throw new Error(`Specialist ${finalTherapistName} is already occupied on ${newDate} at ${newTime}.`);
+    }
+
+    const updates = {
+      booking_date: newDate,
+      booking_time: newTime,
+      therapist_id: finalTherapistId,
+      therapist_name: finalTherapistName,
+      booking_status: 'confirmed',
+      updated_at: new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase
+        .from('bookings')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+
+    const updated = bookings.map((b) => (b.id === id ? { ...b, ...updates } : b));
     setStored(STORAGE_KEYS.BOOKINGS, updated);
     return updated.find((b) => b.id === id);
   },
