@@ -53,3 +53,4 @@ USING (true);
 -- Index for speedy idempotency checking
 CREATE INDEX IF NOT EXISTS idx_notification_logs_idempotency ON notification_logs(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_notification_logs_booking_ref ON notification_logs(booking_reference);
+
