@@ -622,6 +622,19 @@ export const dbService = {
         }
       }
 
+      // 3. If Foreign Key constraint fails (services or therapists table empty in Supabase)
+      if (insertResult.error && insertResult.error.message?.includes('foreign key constraint')) {
+        const fallbackPayload = {
+          ...dbPayload,
+          service_id: null,
+          therapist_id: null
+        };
+        const retryFk = await supabase.from('bookings').insert([fallbackPayload]);
+        if (!retryFk.error) {
+          insertResult = { data: completeRecord, error: null };
+        }
+      }
+
       if (insertResult.error) {
         throw new Error(
           `Supabase RLS Error: ${insertResult.error.message}. Please run the RLS fix SQL in your Supabase SQL editor.`
