@@ -286,3 +286,4 @@ VALUES
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name,
   is_active = true;
+
