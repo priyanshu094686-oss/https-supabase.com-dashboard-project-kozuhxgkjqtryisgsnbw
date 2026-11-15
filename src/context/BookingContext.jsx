@@ -134,7 +134,9 @@ export function BookingProvider({ children }) {
     const updated = await dbService.updateBookingStatus(id, status, cancellationReason);
     setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
 
-    if (status === 'cancelled') {
+    if (status === 'confirmed') {
+      await notificationService.sendNotification('booking_confirmed', updated, settings);
+    } else if (status === 'cancelled') {
       await notificationService.sendNotification('cancellation', updated, settings, { reason: cancellationReason });
     }
 

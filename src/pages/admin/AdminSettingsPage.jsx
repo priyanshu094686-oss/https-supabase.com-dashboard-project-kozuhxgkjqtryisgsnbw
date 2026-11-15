@@ -12,11 +12,16 @@ import {
   Palette,
   CreditCard,
   Share2,
-  Tag
+  Tag,
+  Mail,
+  Send,
+  ShieldCheck,
+  AlertCircle
 } from 'lucide-react';
 import AdminLayout from '../../components/admin/AdminLayout';
 import { useSettings } from '../../context/SettingsContext';
 import { dbService } from '../../lib/supabase';
+import { notificationService } from '../../services/notificationService';
 
 export default function AdminSettingsPage() {
   const { settings, updateSettings } = useSettings();
@@ -73,8 +78,40 @@ export default function AdminSettingsPage() {
     is_promo_enabled: true,
     payment_provider: 'none',
     payment_deposit_percent: 0,
-    publishable_key: ''
+    publishable_key: '',
+    is_email_notifications_enabled: true,
+    admin_alert_email: 'concierge@lotusluxespa.com',
+    email_sender_name: 'Lotus Luxe Spa & Wellness',
+    email_sender_address: 'onboarding@resend.dev'
   });
+
+  // Test Email State
+  const [testEmailRecipient, setTestEmailRecipient] = useState('');
+  const [sendingTestEmail, setSendingTestEmail] = useState(false);
+  const [testEmailStatus, setTestEmailStatus] = useState(null);
+
+  const handleSendTestEmail = async () => {
+    if (!testEmailRecipient.trim()) {
+      alert('Please enter a recipient email address.');
+      return;
+    }
+    setSendingTestEmail(true);
+    setTestEmailStatus(null);
+    try {
+      const res = await notificationService.sendTestEmail(testEmailRecipient.trim(), formData);
+      setTestEmailStatus({
+        success: res.success !== false,
+        message: res.message || 'Test email dispatched successfully!'
+      });
+    } catch (err) {
+      setTestEmailStatus({
+        success: false,
+        message: err.message || 'Failed to dispatch test email.'
+      });
+    } finally {
+      setSendingTestEmail(false);
+    }
+  };
 
   useEffect(() => {
     if (settings) {
@@ -114,8 +151,15 @@ export default function AdminSettingsPage() {
         is_promo_enabled: settings.is_promo_enabled !== false,
         payment_provider: settings.payment_provider || 'none',
         payment_deposit_percent: settings.payment_deposit_percent || 0,
-        publishable_key: settings.publishable_key || ''
+        publishable_key: settings.publishable_key || '',
+        is_email_notifications_enabled: settings.is_email_notifications_enabled !== false,
+        admin_alert_email: settings.admin_alert_email || settings.email || 'concierge@lotusluxespa.com',
+        email_sender_name: settings.email_sender_name || settings.business_name || 'Lotus Luxe Spa & Wellness',
+        email_sender_address: settings.email_sender_address || 'onboarding@resend.dev'
       });
+      if (settings.admin_alert_email || settings.email) {
+        setTestEmailRecipient(settings.admin_alert_email || settings.email);
+      }
     }
   }, [settings]);
 
@@ -140,7 +184,8 @@ export default function AdminSettingsPage() {
     { id: 'contact', label: 'Contact & Addresses', icon: Phone },
     { id: 'hours', label: 'Hours & Currency', icon: Clock },
     { id: 'socials', label: 'Social & Promotions', icon: Share2 },
-    { id: 'payment', label: 'Payment Integration', icon: CreditCard }
+    { id: 'payment', label: 'Payment Integration', icon: CreditCard },
+    { id: 'email', label: 'Email Notifications', icon: Mail }
   ];
 
   return (
@@ -665,6 +710,148 @@ export default function AdminSettingsPage() {
                 </span>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Tab 6: Email Notifications */}
+        {activeTab === 'email' && (
+          <div className="p-6 sm:p-8 rounded-3xl bg-[#0e121c] border border-stone-800 space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-stone-800">
+              <div>
+                <h3 className="text-lg font-serif font-bold text-stone-100 flex items-center gap-2">
+                  <Mail className="w-5 h-5 text-gold-400" />
+                  <span>Automated Email Notification Settings</span>
+                </h3>
+                <p className="text-xs text-stone-400 mt-0.5">
+                  Powered by Resend with Supabase Edge Functions. Configurable recipient alerts and customer updates.
+                </p>
+              </div>
+
+              {/* Master Enable/Disable Toggle */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <span className="text-xs font-semibold text-stone-300">
+                  {formData.is_email_notifications_enabled ? 'Notifications Enabled' : 'Notifications Paused'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={formData.is_email_notifications_enabled}
+                  onChange={(e) => setFormData({ ...formData, is_email_notifications_enabled: e.target.checked })}
+                  className="w-5 h-5 rounded text-gold-500 focus:ring-gold-400 accent-gold-500 cursor-pointer"
+                />
+              </label>
+            </div>
+
+            {/* Email Addresses Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-stone-300 font-semibold mb-1">
+                  Spa Owner / Concierge Alert Email *
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={formData.admin_alert_email}
+                  onChange={(e) => setFormData({ ...formData, admin_alert_email: e.target.value })}
+                  placeholder="owner@lotusluxespa.com"
+                  className="w-full bg-[#131722] border border-stone-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-stone-100 focus:outline-none focus:border-gold-400"
+                />
+                <span className="text-[11px] text-stone-500 mt-1 block">
+                  New reservations, cancellations, and rescheduling alerts are sent to this address.
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-stone-300 font-semibold mb-1">
+                  Sender Display Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.email_sender_name}
+                  onChange={(e) => setFormData({ ...formData, email_sender_name: e.target.value })}
+                  placeholder="Lotus Luxe Spa Concierge"
+                  className="w-full bg-[#131722] border border-stone-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-stone-100 focus:outline-none focus:border-gold-400"
+                />
+                <span className="text-[11px] text-stone-500 mt-1 block">
+                  The brand or concierge name guests will see in their email inbox.
+                </span>
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block text-xs uppercase tracking-wider text-stone-300 font-semibold mb-1">
+                  Sender From Email Address *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.email_sender_address}
+                  onChange={(e) => setFormData({ ...formData, email_sender_address: e.target.value })}
+                  placeholder="concierge@lotusluxespa.com or onboarding@resend.dev"
+                  className="w-full bg-[#131722] border border-stone-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-stone-100 font-mono focus:outline-none focus:border-gold-400"
+                />
+                <span className="text-[11px] text-stone-500 mt-1 block">
+                  During development or testing, use <code className="text-gold-400">onboarding@resend.dev</code>. In production, use your verified custom domain address.
+                </span>
+              </div>
+            </div>
+
+            {/* Security Notice */}
+            <div className="p-4 rounded-2xl bg-stone-900/90 border border-gold-500/30 flex items-start gap-3">
+              <ShieldCheck className="w-5 h-5 text-gold-400 shrink-0 mt-0.5" />
+              <div className="text-xs space-y-1">
+                <strong className="text-stone-200">Server-Side Secret Key Protection</strong>
+                <p className="text-stone-400 leading-relaxed">
+                  Your Resend API Key is stored securely as an encrypted Supabase Secret (<code className="text-gold-300 font-mono">RESEND_API_KEY</code>) inside the Supabase Edge Function environment. Secret keys are never exposed in public forms or frontend bundles.
+                </p>
+              </div>
+            </div>
+
+            {/* Diagnostic Send Test Email Section */}
+            <div className="p-5 rounded-2xl bg-[#141924] border border-stone-800 space-y-3">
+              <h4 className="text-xs uppercase tracking-wider text-gold-400 font-bold flex items-center gap-2">
+                <Send className="w-3.5 h-3.5" />
+                <span>Test Email Connectivity</span>
+              </h4>
+              <p className="text-xs text-stone-400">
+                Dispatch an immediate test message through your server Edge Function to verify live Resend delivery.
+              </p>
+
+              <div className="flex flex-col sm:flex-row items-center gap-3">
+                <input
+                  type="email"
+                  value={testEmailRecipient}
+                  onChange={(e) => setTestEmailRecipient(e.target.value)}
+                  placeholder="Enter email to receive test message..."
+                  className="w-full sm:flex-1 bg-[#10131c] border border-stone-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-stone-100 focus:outline-none focus:border-gold-400"
+                />
+                <button
+                  type="button"
+                  onClick={handleSendTestEmail}
+                  disabled={sendingTestEmail}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-gold-400 border border-gold-500/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{sendingTestEmail ? 'Dispatching...' : 'Send Test Verification'}</span>
+                </button>
+              </div>
+
+              {testEmailStatus && (
+                <div
+                  className={`p-3 rounded-xl text-xs flex items-center gap-2.5 ${
+                    testEmailStatus.success
+                      ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-300'
+                      : 'bg-red-950/60 border border-red-500/40 text-red-300'
+                  }`}
+                >
+                  {testEmailStatus.success ? (
+                    <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                  )}
+                  <span>{testEmailStatus.message}</span>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

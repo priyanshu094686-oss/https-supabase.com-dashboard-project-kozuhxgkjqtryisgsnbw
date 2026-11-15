@@ -182,7 +182,7 @@ export default function AdminBookingsPage() {
     return bookings.filter((b) => b.booking_date === dStr);
   };
 
-  const isEmailConfigured = notificationService.isEmailConfigured();
+  const isEmailEnabled = notificationService.isEmailEnabled(settings);
 
   return (
     <AdminLayout
@@ -193,15 +193,14 @@ export default function AdminBookingsPage() {
         {/* Email Notification Provider Notice Banner */}
         <div className="p-4 rounded-2xl bg-[#121622] border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2.5">
-            <div className={`w-2.5 h-2.5 rounded-full ${isEmailConfigured ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+            <div className={`w-2.5 h-2.5 rounded-full ${isEmailEnabled ? 'bg-emerald-400' : 'bg-stone-500'}`} />
             <div>
               <span className="font-semibold text-stone-200">
-                Email Dispatch Engine: {isEmailConfigured ? 'Active (Live Resend/SMTP)' : 'Simulated / Logged Mode'}
+                Automatic Email Dispatcher: {isEmailEnabled ? 'Active (Edge Function + Resend)' : 'Paused in Settings'}
               </span>
               <p className="text-[11px] text-stone-400 mt-0.5">
-                {isEmailConfigured
-                  ? 'Real emails are actively dispatched to guests upon confirmation, cancellation, and rescheduling.'
-                  : 'All appointments and notification payloads are captured and logged in the database. Set VITE_RESEND_API_KEY in .env for external SMTP delivery.'}
+                Emails are sent via server-side Supabase Edge Functions with Resend to guests and to{' '}
+                <strong className="text-gold-400">{settings?.admin_alert_email || 'owner'}</strong> for every new booking, approval, reschedule, or cancellation.
               </p>
             </div>
           </div>

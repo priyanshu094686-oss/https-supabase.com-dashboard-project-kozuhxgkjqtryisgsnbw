@@ -62,3 +62,4 @@ CREATE POLICY "Public Read Customers" ON customers
 FOR SELECT
 TO public, anon, authenticated
 USING (true);
+
